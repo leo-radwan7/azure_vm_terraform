@@ -1,0 +1,134 @@
+# ==============================================================
+# Document 1 of 2 — Service for Redis
+# ==============================================================
+# Gives the Redis pod a stable DNS name (`redis`) and ClusterIP
+# that other pods in the namespace can connect to. Selects pods
+# by label `app: redis`.
+# ==============================================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis
+  namespace: counter-app
+  labels:
+    app: redis
+spec:
+  type: ClusterIP
+  selector:
+    app: redis        # Must match the pod template's labels below
+  ports:
+    - name: redis
+      port: 6379      # Port the Service listens on
+      targetPort: 6379  # Port on the pod (container) to forward to
+      protocol: TCP
+---
+# ==============================================================
+# Document 2 of 2 — StatefulSet for Redis
+# ==============================================================
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: redis
+  namespace: counter-app
+  labels:
+    app: redis
+spec:
+  # The governing Service. Required for StatefulSets. Mostly relevant
+  # for stable per-pod DNS (useful with headless services); with our
+  # ClusterIP Service it's still required but not actively used.
+  serviceName: redis
+
+  replicas: 1
+
+  # The controller uses this selector to find its managed pods.
+  # It MUST match the pod template's labels exactly.
+  selector:
+    matchLabels:
+      app: redis
+
+  # Template for creating pods.
+  template:
+    metadata:
+      labels:
+        app: redis   # Must match the selector above AND the Service's selector
+    spec:
+      containers:
+        - name: redis
+          image: redis:7-alpine
+
+          # Redis CLI args. $(VAR) is Kubernetes env-var substitution
+          # (specific to K8s — not shell syntax). Expanded at container
+          # startup using the container's env block below.
+          args:
+            - "--requirepass"
+            - "$(REDIS_PASSWORD)"
+
+          ports:
+            - containerPort: 6379
+              name: redis
+
+          env:
+            # The password for --requirepass above.
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: redis-secret
+                  key: REDIS_PASSWORD
+
+            # redis-cli reads REDISCLI_AUTH automatically, so our
+            # health-check probes don't need to pass -a explicitly.
+            - name: REDISCLI_AUTH
+              valueFrom:
+                secretKeyRef:
+                  name: redis-secret
+                  key: REDIS_PASSWORD
+
+          # Mount the persistent volume at /data (where the redis image
+          # writes its RDB/AOF dump files by default).
+          volumeMounts:
+            - name: data      # Matches a volumeClaimTemplate name below
+              mountPath: /data
+
+          resources:
+            requests:
+              cpu: "50m"       # 0.05 cores reserved by scheduler
+              memory: "64Mi"
+            limits:
+              cpu: "200m"
+              memory: "128Mi"  # OOMKilled if exceeded
+
+          # Readiness: "is this container ready for traffic?"
+          # If failing, pod is removed from Service endpoints (no new
+          # connections) but not killed.
+          readinessProbe:
+            exec:
+              command: ["redis-cli", "ping"]
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3
+
+          # Liveness: "is this container alive?"
+          # If failing repeatedly, kubelet restarts the container.
+          # Less aggressive than readiness to avoid restart loops.
+          livenessProbe:
+            exec:
+              command: ["redis-cli", "ping"]
+            initialDelaySeconds: 15
+            periodSeconds: 15
+            timeoutSeconds: 3
+            failureThreshold: 3
+
+  # StatefulSet-specific: template for per-replica PVCs.
+  # Creates one PVC per pod (named `<template-name>-<pod-name>`,
+  # e.g. `data-redis-0`). K3s's default StorageClass (local-path)
+  # will provision a PV for it on the pod's node.
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes:
+          - ReadWriteOnce    # One node at a time can mount it
+        resources:
+          requests:
+            storage: 1Gi     # local-path doesn't enforce size, but we state it

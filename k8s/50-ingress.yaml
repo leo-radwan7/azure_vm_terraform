@@ -1,0 +1,54 @@
+# ==============================================================
+# Ingress for the counter-api app
+# ==============================================================
+# An Ingress is a *config object*, not a server. The Ingress
+# controller (Traefik, bundled with K3s) watches the Kubernetes
+# API for Ingress resources and reconfigures itself to honor
+# the rules below.
+#
+# Traffic path once this is applied:
+#   browser
+#     → server's public IP, port 80
+#     → Azure NSG (port 80 allowed on server only)
+#     → Klipper svclb-traefik pod (host network, forwards to Traefik Svc)
+#     → Traefik Service (kube-system/traefik)
+#     → Traefik pod (matches this Ingress's rule)
+#     → counter-api Service (counter-app/counter-api, port 80)
+#     → one of the two API pods (gunicorn on port 5000)
+#     → Redis Service → Redis pod (for the INCR call)
+# ==============================================================
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: counter-api
+  namespace: counter-app
+spec:
+  # Which Ingress controller should pick this up. Matches the
+  # `traefik` IngressClass that K3s registers when it installs
+  # bundled Traefik.
+  ingressClassName: traefik
+
+  rules:
+    # No `host:` field — match any Host header. Necessary because
+    # we're hitting the bare public IP (no DNS name), so the
+    # browser sends `Host: <public_ip>` and we want the rule to
+    # match regardless.
+    - http:
+        paths:
+          - path: /
+            # Prefix: match `/` and anything under it. Our app
+            # only has one route (`/`) so functionally this is
+            # the same as Exact, but Prefix is the conventional
+            # default for a catch-all Ingress.
+            pathType: Prefix
+            backend:
+              service:
+                # Must be a Service in this same namespace.
+                # Cross-namespace routing isn't allowed in a
+                # single Ingress resource.
+                name: counter-api
+                port:
+                  # The Service's port (80), not the container's
+                  # targetPort (5000). Traefik talks to the
+                  # Service; the Service forwards to the pod.
+                  number: 80

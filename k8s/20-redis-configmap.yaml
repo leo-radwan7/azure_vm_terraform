@@ -1,0 +1,10 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: redis-config
+  namespace: counter-app
+data:
+  REDIS_HOST: redis
+  # Quoted intentionally — ConfigMap values must be strings.
+  # Unquoted 6379 would be parsed by YAML as an integer and rejected.
+  REDIS_PORT: "6379"

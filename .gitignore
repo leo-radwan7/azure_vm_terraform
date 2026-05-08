@@ -3,6 +3,10 @@
 *.tfstate
 *.tfstate.backup
 
+# Terraform variables (often hold secrets)
+*.tfvars
+*.tfvars.json
+
 # Crash logs
 crash.log
 crash.*.log
@@ -15,3 +19,20 @@ override.tf.json
 
 # Plan files
 *.tfplan
+
+# Kubernetes secrets
+k8s/*-secret.yaml
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+env/
+
+# Generic env files
+.env
+.env.local
+
+# macOS
+.DS_Store

@@ -1,0 +1,113 @@
+# ==============================================================
+# Document 1 of 2 — Service for the API
+# ==============================================================
+# ClusterIP Service. Listens on port 80, forwards to pods on
+# their container port 5000. The Ingress (stage 4.6) will route
+# external traffic to this Service.
+# ==============================================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: counter-api
+  namespace: counter-app
+  labels:
+    app: counter-api
+spec:
+  type: ClusterIP
+  selector:
+    app: counter-api       # Must match pod labels below
+  ports:
+    - name: http
+      port: 80             # Service port (what the Ingress targets)
+      targetPort: 5000     # Container port (what gunicorn binds)
+      protocol: TCP
+---
+# ==============================================================
+# Document 2 of 2 — Deployment for the API
+# ==============================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: counter-api
+  namespace: counter-app
+  labels:
+    app: counter-api
+spec:
+  replicas: 2
+
+  # How the Deployment controller identifies "its" pods.
+  selector:
+    matchLabels:
+      app: counter-api
+
+  # Rolling update strategy: always keep 2 available; allow
+  # 1 extra pod during rollouts. Zero-downtime updates.
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+
+  # Template for creating pods.
+  template:
+    metadata:
+      labels:
+        app: counter-api   # Must match selector above AND Service selector
+    spec:
+      containers:
+        - name: api
+          image: leodvethings/k3s-counter-api:v1
+
+          # imagePullPolicy is implied here. For explicit tags (not
+          # :latest), the default is IfNotPresent — Kubernetes caches
+          # the image on each node and reuses it. Would be "Always"
+          # if we used :latest.
+          # imagePullPolicy: IfNotPresent
+
+          ports:
+            - containerPort: 5000
+              name: http
+              protocol: TCP
+
+          # Pull REDIS_HOST and REDIS_PORT (every key) from the
+          # ConfigMap, each as an env var with the same name.
+          envFrom:
+            - configMapRef:
+                name: redis-config
+
+          # Pull REDIS_PASSWORD specifically from the Secret.
+          # Explicit form — more auditable than envFrom for sensitive
+          # data (only the keys we name here are injected).
+          env:
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: redis-secret
+                  key: REDIS_PASSWORD
+
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "128Mi"
+            limits:
+              cpu: "300m"
+              memory: "256Mi"
+
+          # TCP probe: checks that *something* is listening on 5000.
+          # Doesn't hit the app's HTTP handler, so it won't pollute
+          # our Redis counter during health checks.
+          readinessProbe:
+            tcpSocket:
+              port: 5000
+            initialDelaySeconds: 3
+            periodSeconds: 5
+            timeoutSeconds: 2
+            failureThreshold: 3
+
+          livenessProbe:
+            tcpSocket:
+              port: 5000
+            initialDelaySeconds: 15
+            periodSeconds: 15
+            timeoutSeconds: 2
+            failureThreshold: 3
