@@ -144,24 +144,45 @@ kubectl -n argocd rollout status deployment/argocd-server --timeout=300s
 
 echo "ArgoCD install complete."
 
-# ---- Step 3e: Expose the ArgoCD dashboard via NodePort ----
-# By default, the argocd-server Service is ClusterIP (internal
-# only). We patch it to NodePort so the web dashboard is
-# reachable from a browser at https://<server_public_ip>:30443.
+# ---- Step 3e: Configure ArgoCD for external access ----
 #
-# "kubectl patch" modifies a live resource without rewriting
-# the whole YAML. The --type=merge flag says "JSON merge patch:
-# merge this JSON snippet into the existing spec."
+# Three things need to happen before the dashboard is reachable
+# from a browser:
 #
-# 30443 is in the allowed NodePort range (30000-32767) and is
-# easy to remember (ArgoCD serves on 443 internally).
+# 1. Delete the argocd-server NetworkPolicy. ArgoCD installs
+#    NetworkPolicies that restrict which pods can talk to it.
+#    This blocks external NodePort traffic from reaching the
+#    dashboard. Safe to remove for a learning cluster.
 #
-# ArgoCD serves HTTPS by default with a self-signed cert, so
-# the browser will show a security warning -- that's expected.
-kubectl patch svc argocd-server -n argocd --type=merge \
-  -p '{"spec": {"type": "NodePort", "ports": [{"port": 443, "nodePort": 30443}]}}'
+# 2. Enable insecure mode (plain HTTP). By default, ArgoCD
+#    serves HTTP on port 8080 but redirects to HTTPS, which
+#    isn't configured and causes a redirect loop. Setting
+#    server.insecure=true disables the redirect so the
+#    dashboard serves plain HTTP. In production, a reverse
+#    proxy in front would handle TLS termination.
+#
+# 3. Patch the Service to NodePort so the dashboard is
+#    reachable at http://<server_public_ip>:30443.
+#    port 80 -> targetPort 8080 (what argocd-server listens on).
 
-echo "ArgoCD dashboard exposed on NodePort 30443."
+echo "Configuring ArgoCD for external access..."
+
+# 1. Remove NetworkPolicy blocking external traffic
+kubectl delete networkpolicy argocd-server-network-policy -n argocd
+
+# 2. Enable insecure mode (plain HTTP, no HTTPS redirect)
+kubectl -n argocd patch configmap argocd-cmd-params-cm --type=merge \
+  -p '{"data": {"server.insecure": "true"}}'
+
+# Restart argocd-server to pick up the config change
+kubectl -n argocd rollout restart deployment argocd-server
+kubectl -n argocd rollout status deployment/argocd-server --timeout=120s
+
+# 3. Expose via NodePort on 30443
+kubectl patch svc argocd-server -n argocd --type=merge \
+  -p '{"spec": {"type": "NodePort", "ports": [{"port": 80, "targetPort": 8080, "nodePort": 30443}]}}'
+
+echo "ArgoCD dashboard exposed at http://<server_public_ip>:30443"
 
 # ---- Step 4: Create the ArgoCD Application ----
 # This tells ArgoCD: "watch the k8s/ directory in our GitHub
