@@ -1,0 +1,49 @@
+# ==============================================================
+# ArgoCD Application — counter-app
+# ==============================================================
+# This resource tells ArgoCD: "watch my GitHub repo's k8s/
+# directory and deploy whatever manifests you find there into
+# the counter-app namespace on this cluster."
+#
+# The Application itself lives in the argocd namespace (where
+# ArgoCD's controller watches for it). The resources it DEPLOYS
+# land in counter-app (spec.destination.namespace).
+#
+# This file lives in argocd/ (not k8s/) to avoid a loop where
+# ArgoCD would try to apply the Application that manages the
+# very directory it lives in.
+# ==============================================================
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: counter-app
+  namespace: argocd
+spec:
+  # --- Where to find the manifests ---
+  source:
+    repoURL: https://github.com/leo-radwan7/azure_vm_terraform.git
+    targetRevision: HEAD
+    path: k8s
+
+  # --- Where to deploy them ---
+  destination:
+    # "The cluster I'm running on" — the in-cluster API address
+    # that every pod can reach.
+    server: https://kubernetes.default.svc
+    namespace: counter-app
+
+  # --- Sync behavior ---
+  syncPolicy:
+    automated:
+      # prune: if a manifest is DELETED from git, delete the
+      # corresponding resource from the cluster too.
+      prune: true
+      # selfHeal: if someone manually changes the cluster
+      # (e.g. kubectl scale), revert to what git says.
+      selfHeal: true
+    syncOptions:
+      # Create the counter-app namespace if it doesn't exist.
+      # On a fresh cluster it won't, so ArgoCD needs this
+      # permission to create it before applying the other
+      # manifests into it.
+      - CreateNamespace=true

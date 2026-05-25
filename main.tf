@@ -99,7 +99,7 @@ module "server" {
   location            = azurerm_resource_group.rg.location
   subnet_id           = azurerm_subnet.subnet.id
   subnet_cidr         = local.subnet_cidr
-  extra_open_ports    = [6443, 80, 443]
+  extra_open_ports    = [6443, 80, 443, 30443]
 
   # templatefile() reads a file and replaces ${...} placeholders
   # with the values we provide in the second argument (a map).

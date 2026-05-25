@@ -80,3 +80,82 @@ curl -sfL https://get.k3s.io | K3S_TOKEN="${k3s_token}" sh -s - server \
   --tls-san "$PUBLIC_IP"
 
 echo "K3s server install complete."
+
+# ---- Step 3: Install ArgoCD ----
+# ArgoCD is a GitOps controller that runs inside the cluster,
+# watches a git repo, and automatically applies Kubernetes
+# manifests when they change. We install it here in cloud-init
+# so that by the time the VM is "done booting," ArgoCD is ready
+# to manage app deployment with zero manual steps.
+
+# 3a. Tell kubectl where to find the kubeconfig.
+# K3s writes it to /etc/rancher/k3s/k3s.yaml (root-only).
+# Cloud-init runs as root, so this path works.
+export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
+
+# 3b. Wait for the K3s API server to accept requests.
+# After K3s installs, its API server takes a few seconds to
+# start. kubectl commands will fail during that window. We
+# poll until "kubectl get nodes" succeeds, same retry pattern
+# as the IMDS fix in Step 1.
+echo "Waiting for K3s API server to be ready..."
+for attempt in $(seq 1 30); do
+  if kubectl get nodes >/dev/null 2>&1; then
+    echo "K3s API is ready (attempt $attempt)."
+    break
+  fi
+  echo "K3s API not ready yet (attempt $attempt/30), sleeping 2s..."
+  sleep 2
+done
+
+# 3c. Create the argocd namespace and apply the install manifest.
+# The URL points to the latest stable ArgoCD release -- a single
+# YAML file containing all the resources ArgoCD needs: custom
+# resource definitions, Deployments, Services, RBAC roles, etc.
+echo "Installing ArgoCD..."
+kubectl create namespace argocd
+kubectl apply -n argocd -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
+
+# 3d. Wait for ArgoCD's API/dashboard component to be ready.
+# "rollout status" blocks until the Deployment's pods are all
+# Running and Ready, or until the timeout. ArgoCD typically
+# takes 30-60s to start on small VMs.
+echo "Waiting for ArgoCD server to be ready..."
+kubectl -n argocd rollout status deployment/argocd-server --timeout=180s
+
+echo "ArgoCD install complete."
+
+# ---- Step 3e: Expose the ArgoCD dashboard via NodePort ----
+# By default, the argocd-server Service is ClusterIP (internal
+# only). We patch it to NodePort so the web dashboard is
+# reachable from a browser at https://<server_public_ip>:30443.
+#
+# "kubectl patch" modifies a live resource without rewriting
+# the whole YAML. The --type=merge flag says "JSON merge patch:
+# merge this JSON snippet into the existing spec."
+#
+# 30443 is in the allowed NodePort range (30000-32767) and is
+# easy to remember (ArgoCD serves on 443 internally).
+#
+# ArgoCD serves HTTPS by default with a self-signed cert, so
+# the browser will show a security warning -- that's expected.
+kubectl patch svc argocd-server -n argocd --type=merge \
+  -p '{"spec": {"type": "NodePort", "ports": [{"port": 443, "nodePort": 30443}]}}'
+
+echo "ArgoCD dashboard exposed on NodePort 30443."
+
+# ---- Step 4: Create the ArgoCD Application ----
+# This tells ArgoCD: "watch the k8s/ directory in our GitHub
+# repo and deploy whatever manifests you find there." ArgoCD
+# then clones the repo, reads the YAMLs, and applies them --
+# the same thing "kubectl apply -f k8s/" does, but automated
+# and continuously reconciled.
+#
+# We curl the Application manifest from GitHub rather than
+# embedding it as a heredoc. This way the YAML lives in one
+# place (the repo), and if we change it later, we only update
+# one file.
+echo "Creating ArgoCD Application for counter-app..."
+kubectl apply -f https://raw.githubusercontent.com/leo-radwan7/azure_vm_terraform/main/argocd/counter-app.yaml
+
+echo "ArgoCD Application created. ArgoCD will now deploy the app from git."

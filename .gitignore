@@ -20,9 +20,6 @@ override.tf.json
 # Plan files
 *.tfplan
 
-# Kubernetes secrets
-k8s/*-secret.yaml
-
 # Python
 __pycache__/
 *.pyc
