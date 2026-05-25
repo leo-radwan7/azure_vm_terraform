@@ -11,32 +11,34 @@
 # =============================================================
 set -e   # Exit immediately if any command fails
 
-# ---- Step 1: Get our public IP from Azure IMDS (with retry) ----
-# IMDS (Instance Metadata Service) is a special HTTP endpoint
-# available to every Azure VM at 169.254.169.254. The VM can
-# query it to learn about itself -- its name, IPs, region, etc.
-# No authentication needed, it only works from inside the VM.
+# ---- Step 1: Get our public IP ----
+# We need the public IP for --tls-san below (so kubectl from
+# your laptop can connect over the public IP without TLS errors).
 #
-# We need the public IP for --tls-san below.
+# Strategy: try Azure IMDS first (local, no external dependency).
+# If IMDS doesn't return a public IP after 15 attempts (~30s),
+# fall back to an external IP-lookup service (ifconfig.me).
 #
-# WHY THE LOOP:
-# Cloud-init runs early in boot. Azure attaches the public IP and
-# propagates it into IMDS asynchronously. There is a window
-# (usually under 10s, occasionally longer) where IMDS responds
-# 200 OK but the public-IP field is empty. A single un-retried
-# curl can land in that window, producing an empty PUBLIC_IP --
-# which then makes the --tls-san flag below silently no-op,
-# leaving the K3s API cert without the public IP in its SANs
-# and breaking remote kubectl.
+# WHY IMDS CAN FAIL:
+# IMDS (Instance Metadata Service, 169.254.169.254) is a local
+# HTTP endpoint every Azure VM can query to learn about itself.
+# However, the public-IP field can be empty due to:
+#   - A race at boot (public IP not yet attached to the NIC)
+#   - Standard SKU public IPs not always reported by IMDS
+#   - Subscription state changes affecting metadata propagation
 #
-# Fix: poll IMDS until we get a non-empty answer, with a hard
-# cap so we fail loudly if something is genuinely broken instead
-# of producing a half-working cluster.
+# WHY THE FALLBACK WORKS:
+# ifconfig.me is an external service that returns the public IP
+# the request came from. Since the VM has internet access (we
+# download K3s and ArgoCD later in this script), this is reliable.
+# The only cost is a dependency on an external service, which is
+# why we try IMDS first.
+
 PUBLIC_IP=""
-for attempt in $(seq 1 30); do
-  # -f           : curl returns non-zero on HTTP errors
-  # --max-time 5 : cap one attempt so a hung request can't stall
-  # || true      : suppress set -e on transient failure so we can retry
+
+# Attempt 1: Azure IMDS (15 attempts, ~30s)
+echo "Trying to get public IP from Azure IMDS..."
+for attempt in $(seq 1 15); do
   PUBLIC_IP=$(curl -sf --max-time 5 -H Metadata:true --noproxy "*" \
     "http://169.254.169.254/metadata/instance/network/interface/0/ipv4/ipAddress/0/publicIpAddress?api-version=2021-02-01&format=text" \
     || true)
@@ -46,12 +48,23 @@ for attempt in $(seq 1 30); do
     break
   fi
 
-  echo "IMDS returned empty public IP (attempt $attempt/30), sleeping 2s..."
+  echo "IMDS returned empty (attempt $attempt/15), sleeping 2s..."
   sleep 2
 done
 
+# Attempt 2: external IP-lookup service (fallback)
 if [ -z "$PUBLIC_IP" ]; then
-  echo "ERROR: IMDS did not return a public IP after 30 attempts (~60s)." >&2
+  echo "IMDS did not return a public IP. Falling back to ifconfig.me..."
+  PUBLIC_IP=$(curl -sf --max-time 10 https://ifconfig.me || true)
+
+  if [ -n "$PUBLIC_IP" ]; then
+    echo "Got public IP from ifconfig.me: $PUBLIC_IP"
+  fi
+fi
+
+# Hard fail if neither method worked
+if [ -z "$PUBLIC_IP" ]; then
+  echo "ERROR: Could not determine public IP from IMDS or ifconfig.me." >&2
   echo "Aborting K3s install -- the cert would be missing the public IP SAN." >&2
   exit 1
 fi
