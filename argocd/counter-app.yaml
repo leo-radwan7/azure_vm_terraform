@@ -19,6 +19,12 @@ metadata:
   name: counter-app
   namespace: argocd
 spec:
+  # Every Application must belong to an ArgoCD Project.
+  # "default" is the built-in project that ships with ArgoCD
+  # and has no restrictions — it can deploy to any namespace
+  # and use any source repo.
+  project: default
+
   # --- Where to find the manifests ---
   source:
     repoURL: https://github.com/leo-radwan7/azure_vm_terraform.git
