@@ -140,7 +140,7 @@ kubectl apply -n argocd --server-side=true -f https://raw.githubusercontent.com/
 # Running and Ready, or until the timeout. ArgoCD typically
 # takes 30-60s to start on small VMs.
 echo "Waiting for ArgoCD server to be ready..."
-kubectl -n argocd rollout status deployment/argocd-server --timeout=180s
+kubectl -n argocd rollout status deployment/argocd-server --timeout=300s
 
 echo "ArgoCD install complete."
 
