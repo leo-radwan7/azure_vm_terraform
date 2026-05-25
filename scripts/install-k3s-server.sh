@@ -125,9 +125,15 @@ done
 # The URL points to the latest stable ArgoCD release -- a single
 # YAML file containing all the resources ArgoCD needs: custom
 # resource definitions, Deployments, Services, RBAC roles, etc.
+#
+# --server-side=true is required because recent ArgoCD versions
+# have CRDs so large that the default client-side apply exceeds
+# Kubernetes' 256KB annotation limit. Server-side apply uses
+# "managed fields" instead of the last-applied-configuration
+# annotation, avoiding the size limit entirely.
 echo "Installing ArgoCD..."
 kubectl create namespace argocd
-kubectl apply -n argocd -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
+kubectl apply -n argocd --server-side=true -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
 
 # 3d. Wait for ArgoCD's API/dashboard component to be ready.
 # "rollout status" blocks until the Deployment's pods are all
