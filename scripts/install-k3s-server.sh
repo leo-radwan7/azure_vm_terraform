@@ -106,11 +106,22 @@ echo "K3s server install complete."
 # Cloud-init runs as root, so this path works.
 export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
 
-# 3b. Wait for the K3s API server to accept requests.
-# After K3s installs, its API server takes a few seconds to
-# start. kubectl commands will fail during that window. We
-# poll until "kubectl get nodes" succeeds, same retry pattern
-# as the IMDS fix in Step 1.
+# 3b. Wait for K3s to be FULLY stable (not just API responding).
+#
+# Two phases:
+#   Phase 1 — wait for the API server to accept requests.
+#   Phase 2 — wait for all kube-system pods to be Running.
+#
+# WHY BOTH PHASES:
+# "kubectl get nodes" succeeds as soon as the API server starts
+# accepting connections, but K3s's internal controllers (CoreDNS,
+# Traefik, metrics-server, etc.) are still starting. If we install
+# ArgoCD during this window, the combined load of ArgoCD's 7 pods
+# plus all the CRDs can overwhelm the API server, causing K3s to
+# crash-loop. Waiting for system pods to be Running ensures K3s
+# has finished its own initialization before we add more load.
+
+# Phase 1: API server responding
 echo "Waiting for K3s API server to be ready..."
 for attempt in $(seq 1 30); do
   if kubectl get nodes >/dev/null 2>&1; then
@@ -119,6 +130,27 @@ for attempt in $(seq 1 30); do
   fi
   echo "K3s API not ready yet (attempt $attempt/30), sleeping 2s..."
   sleep 2
+done
+
+# Phase 2: all kube-system pods Running
+# We check that no pods are in Pending/ContainerCreating/CrashLoopBackOff.
+# The grep -v filters out Completed pods (one-shot Helm install jobs)
+# and the header line. If the remaining lines all show "Running",
+# the count of non-running pods is 0 and we proceed.
+echo "Waiting for K3s system pods to be fully ready..."
+for attempt in $(seq 1 60); do
+  NOT_READY=$(kubectl get pods -n kube-system --no-headers 2>/dev/null \
+    | grep -v "Completed" \
+    | grep -v "Running" \
+    || true)
+
+  if [ -z "$NOT_READY" ]; then
+    echo "All kube-system pods are Running (attempt $attempt)."
+    break
+  fi
+
+  echo "Some kube-system pods not ready yet (attempt $attempt/60), sleeping 5s..."
+  sleep 5
 done
 
 # 3c. Create the argocd namespace and apply the install manifest.
