@@ -9,9 +9,18 @@ Turn a single-VM Terraform config into a reusable module, use it to stand up thr
 **Infrastructure (Terraform):**
 - Terraform config is complete and currently applied.
 - All three VMs created, K3s installed via cloud-init, cluster verified working.
-- `kubectl get nodes` returns three Ready nodes running K3s v1.34.6+k3s1.
+- `kubectl get nodes` returns three Ready nodes running K3s v1.35.5+k3s1.
+- Server VM upgraded to `Standard_F2als_v7` (2 cores, 4 GB RAM) to accommodate ArgoCD. Agents remain at `Standard_F1als_v7` (1 core, 2 GB RAM). Total: 4 cores (quota limit).
 
 **Bonus task (deploy an app reachable from a browser):** ✅ complete.
+
+**ArgoCD (GitOps):** ✅ complete.
+- ArgoCD installed via cloud-init on the server VM after K3s is fully stable.
+- ArgoCD Application `counter-app` points at `k8s/` directory in GitHub repo (`https://github.com/leo-radwan7/azure_vm_terraform.git`).
+- Auto-sync enabled (prune + selfHeal) — changes pushed to `k8s/` in git are automatically applied to the cluster within 3 minutes.
+- Dashboard accessible at `http://<server_public_ip>:30443` (HTTP, insecure mode; login: `admin` + auto-generated password from `argocd-initial-admin-secret`).
+- GitOps loop verified: changed API replicas from 2 → 3 in git, ArgoCD detected and applied the change automatically.
+- Full stack deploys from a single `terraform apply` — no manual `kubectl` needed.
 - ✅ Stage 1: Wrote Python Flask API (`app/app.py`) — single endpoint that increments a Redis counter and returns JSON with the pod hostname.
 - ✅ Stage 2: Wrote `app/Dockerfile` and `app/.dockerignore`. Single-stage build on `python:3.12-slim`, runs `gunicorn` with 2 workers on port 5000.
 - ✅ Stage 3: Built image for `linux/amd64` via `docker buildx` (cross-compiled from arm64 Mac) and pushed to Docker Hub as `leodvethings/k3s-counter-api:v1`.
@@ -29,7 +38,7 @@ Turn a single-VM Terraform config into a reusable module, use it to stand up thr
 - Subscription ID: `<YOUR_SUBSCRIPTION_ID>`
 - Region: `West US 2`
 - Core quota: 4 cores (hard limit on this subscription)
-- VM size: `Standard_F1als_v7` (1 core, 2 GB RAM). B1-series 1-core SKUs were capacity-restricted in westus2; 2-core SKUs would exceed the 4-core quota (3 × 2 = 6).
+- VM sizes: Server `Standard_F2als_v7` (2 cores, 4 GB RAM); agents `Standard_F1als_v7` (1 core, 2 GB RAM). Server was upgraded from F1als to F2als to accommodate ArgoCD's resource requirements. Total: 2+1+1 = 4 cores (quota limit).
 - SSH key pair: `~/.ssh/azure_vm_key` (private), `~/.ssh/azure_vm_key.pub` (public)
 - SSH user: `azureuser`
 - SSH: `ssh -i ~/.ssh/azure_vm_key azureuser@<public-ip>`
@@ -46,9 +55,10 @@ ms_azure_make_vm/
 │   ├── terraform.tfstate               ← Current state
 │   ├── terraform.tfstate.backup        ← Previous state
 │   ├── .terraform/                     ← Downloaded providers (gitignored)
-│   ├── llm_context.md                  ← This file (currently untracked in git)
+│   ├── llm_context.md                  ← This file (tracked in git, subscription ID redacted)
+│   ├── issues_encountered_2026-05-26.md ← Detailed issue report from ArgoCD integration sessions
 │   ├── scripts/                        ← Cloud-init templates for Terraform
-│   │   ├── install-k3s-server.sh       ← templatefile vars: k3s_token
+│   │   ├── install-k3s-server.sh       ← templatefile vars: k3s_token; installs K3s + ArgoCD + deploys app via GitOps
 │   │   └── install-k3s-agent.sh        ← templatefile vars: k3s_token, server_private_ip
 │   ├── modules/
 │   │   └── vm/
@@ -65,8 +75,10 @@ ms_azure_make_vm/
 │       ├── 10-redis-secret.yaml        ← Secret: redis-secret (REDIS_PASSWORD)
 │       ├── 20-redis-configmap.yaml     ← ConfigMap: redis-config (REDIS_HOST, REDIS_PORT)
 │       ├── 30-redis.yaml               ← Service + StatefulSet + volumeClaimTemplate for Redis
-│       ├── 40-api.yaml                 ← Service + Deployment for counter-api
+│       ├── 40-api.yaml                 ← Service + Deployment for counter-api (3 replicas)
 │       └── 50-ingress.yaml             ← Ingress: routes / to counter-api Service via Traefik
+│   └── argocd/                         ← ArgoCD configuration (separate from k8s/ to avoid self-management loop)
+│       └── counter-app.yaml            ← ArgoCD Application: watches k8s/ in GitHub, auto-syncs to cluster
 └── personal_files(llm_ignore)/         ← Learning docs, outside the repo
     ├── personal_learning.md
     ├── k3s-terraform-cluster-learning-guide.md
@@ -92,7 +104,7 @@ ms_azure_make_vm/
 
 | Module label | VM name | extra_open_ports | custom_data script | depends_on |
 |---|---|---|---|---|
-| `server` | `k3s-server` | `[6443, 80, 443]` | `install-k3s-server.sh` | none |
+| `server` | `k3s-server` | `[6443, 80, 443, 30443]` | `install-k3s-server.sh` | none |
 | `agent1` | `k3s-agent-1` | `[]` | `install-k3s-agent.sh` | `[module.server]` |
 | `agent2` | `k3s-agent-2` | `[]` | `install-k3s-agent.sh` | `[module.server]` |
 
@@ -121,7 +133,7 @@ ms_azure_make_vm/
 
 ### NSG Rules Per VM
 
-**Server (`k3s-server-nsg`):** priority 1000 allow intra-subnet; 1001 SSH; 1100 TCP/6443 (K3s API); 1101 TCP/80; 1102 TCP/443.
+**Server (`k3s-server-nsg`):** priority 1000 allow intra-subnet; 1001 SSH; 1100 TCP/6443 (K3s API); 1101 TCP/80; 1102 TCP/443; 1103 TCP/30443 (ArgoCD dashboard).
 **Agents:** priority 1000 intra-subnet; 1001 SSH. No extra ports.
 
 ## Bonus Task — App Details
@@ -161,10 +173,18 @@ Key choices: `python:3.12-slim` (balance of size and compatibility — glibc, un
 - **Secret** `redis-secret` (type Opaque) — holds `REDIS_PASSWORD` (one key). Written with `stringData:` in the source YAML.
 - **ConfigMap** `redis-config` — `REDIS_HOST=redis`, `REDIS_PORT="6379"`.
 - **Redis** — **ClusterIP Service** `redis` (port 6379) + **StatefulSet** `redis` (1 replica, image `redis:7-alpine`). Auth via `--requirepass $(REDIS_PASSWORD)` with value from the Secret. Storage via `volumeClaimTemplates` → PVC `data-redis-0` (1Gi RWO) → dynamically-provisioned PV via K3s's `local-path` StorageClass (directory on the pod's node). `exec` probes running `redis-cli ping` (authenticated via `REDISCLI_AUTH` env). Note: the originally-planned *headless* Service was replaced with a regular ClusterIP for simpler client behavior with a single-replica Redis.
-- **API** — **ClusterIP Service** `counter-api` (port 80 → targetPort 5000, port name `http`) + **Deployment** `counter-api` (2 replicas, image `leodvethings/k3s-counter-api:v1`). Env populated by `envFrom` (entire `redis-config` ConfigMap) plus explicit `env.valueFrom.secretKeyRef` for `REDIS_PASSWORD`. `tcpSocket` probes on port 5000 (chosen over HTTP GET `/` to avoid probe traffic incrementing the Redis counter). `RollingUpdate` strategy with `maxSurge: 1`, `maxUnavailable: 0` for zero-downtime updates.
+- **API** — **ClusterIP Service** `counter-api` (port 80 → targetPort 5000, port name `http`) + **Deployment** `counter-api` (3 replicas, image `leodvethings/k3s-counter-api:v1`). Env populated by `envFrom` (entire `redis-config` ConfigMap) plus explicit `env.valueFrom.secretKeyRef` for `REDIS_PASSWORD`. `tcpSocket` probes on port 5000 (chosen over HTTP GET `/` to avoid probe traffic incrementing the Redis counter). `RollingUpdate` strategy with `maxSurge: 1`, `maxUnavailable: 0` for zero-downtime updates.
 - **Ingress** `counter-api` (`k8s/50-ingress.yaml`) — `apiVersion: networking.k8s.io/v1`, `ingressClassName: traefik`, single rule with no host filter, one path entry `/` (`pathType: Prefix`) → backend Service `counter-api` port `80`. Picked up by K3s's bundled Traefik; `ADDRESS` resolves to all three node public IPs (Klipper exposes 80/443 on every node's host network). No TLS, no annotations.
 
-**Entry path (live):** browser → server's public IP:80 → Azure NSG (80 allowed on server only) → Klipper `svclb-traefik-*` pod on the server's host network → Traefik Service → Traefik pod → Ingress rule match → `counter-api` Service → one of the two API pods → Redis Service → Redis pod.
+**ArgoCD (deployed via cloud-init, manages the app above):**
+- **ArgoCD** installed in `argocd` namespace via cloud-init after K3s system pods are fully stable. Uses `--server-side=true` for install to avoid CRD annotation size limits.
+- **ArgoCD Application** `counter-app` (`argocd/counter-app.yaml`) — `project: default`, source `k8s/` directory from GitHub repo, destination `https://kubernetes.default.svc` namespace `counter-app`. Auto-sync with `prune: true` and `selfHeal: true`. `CreateNamespace=true` sync option.
+- **Dashboard** exposed via NodePort 30443 on the server. ArgoCD runs in insecure mode (plain HTTP, `server.insecure: "true"` in `argocd-cmd-params-cm`). The `argocd-server-network-policy` is deleted by cloud-init to allow external NodePort traffic. Service patched to `port: 80 → targetPort: 8080 → nodePort: 30443`.
+- **Login:** username `admin`, password auto-generated in Secret `argocd-initial-admin-secret`.
+
+**Entry path — counter app (live):** browser → server's public IP:80 → Azure NSG (80 allowed on server only) → Klipper `svclb-traefik-*` pod on the server's host network → Traefik Service → Traefik pod → Ingress rule match → `counter-api` Service → one of the three API pods → Redis Service → Redis pod.
+
+**Entry path — ArgoCD dashboard:** browser → server's public IP:30443 → Azure NSG (30443 allowed on server only) → NodePort → `argocd-server` pod (port 8080).
 
 ## Kubectl Setup on User's Mac
 
@@ -180,7 +200,9 @@ Key choices: `python:3.12-slim` (balance of size and compatibility — glibc, un
 2. **Ordering:** `depends_on` creates server before agents. Agent script's retry loop handles the gap between "VM exists" and "K3s is running."
 3. **Networking:** Single subnet. Intra-subnet NSG rule allows all traffic between nodes (covers all K3s ports). Only the server exposes ports to the internet.
 4. **Provisioning:** Cloud-init via `custom_data` (not `remote-exec`). Declarative, no SSH during Terraform apply, scripts run as root on first boot.
-5. **TLS SAN:** Server script fetches its own public IP from Azure IMDS at runtime and passes it as `--tls-san`. Avoids circular dependency (public IP created inside the module, custom_data passed in). **Known bug — see issue 6 below.**
+5. **TLS SAN:** Server script fetches its own public IP at runtime and passes it as `--tls-san`. Tries Azure IMDS first (15 attempts), falls back to `ifconfig.me` (external IP-lookup service). IMDS is unreliable for Standard SKU public IPs; the fallback is reliable because the VM has internet access. Avoids circular dependency (public IP created inside the module, custom_data passed in).
+10. **ArgoCD for GitOps:** Installed via cloud-init after K3s system pods are fully stable. App manifests in `k8s/` are managed by ArgoCD watching the GitHub repo, not by manual `kubectl apply`. Changes pushed to git are automatically applied within 3 minutes.
+11. **ArgoCD Application in separate directory:** `argocd/counter-app.yaml` lives outside `k8s/` to avoid ArgoCD trying to manage the Application resource that defines the very directory it watches.
 6. **App config via env vars:** ConfigMap/Secret → container env vars, not baked into the image. 12-factor-style.
 7. **Redis inside the cluster:** Not a managed Azure service. Avoids needing extra Azure resources and teaches StatefulSet + PVC.
 8. **Docker Hub over ACR:** Public image + zero auth config in K3s.
@@ -198,18 +220,17 @@ Key choices: `python:3.12-slim` (balance of size and compatibility — glibc, un
 
 5. **SSH key path:** Default `ssh` doesn't know about custom key names. Must use `ssh -i ~/.ssh/azure_vm_key`.
 
-6. **IMDS race in `install-k3s-server.sh` causing missing TLS SAN — FIXED in script, pending destroy/apply verification.** At cloud-init time, the curl to Azure IMDS for the public IP could return empty (public IP attachment race). Script then ran `--tls-san ""` which K3s silently ignored. Cert was issued only for private IP and localhost, so `kubectl` from Mac failed with `x509: certificate is valid for 10.0.1.4, 10.43.0.1, 127.0.0.1, ::1, not <public_ip>`.
-   - **Live patch applied on the *currently-running* server (NOT in Terraform):**
-     - Wrote `/etc/rancher/k3s/config.yaml` with:
-       ```
-       tls-san:
-         - <server_public_ip>
-       ```
-     - `sudo rm -f /var/lib/rancher/k3s/server/tls/dynamic-cert.json`
-     - `sudo systemctl restart k3s`
-   - **Permanent script-level fix applied (2026-04-30):** `scripts/install-k3s-server.sh` now polls IMDS up to 30 times with 2s sleeps and `--max-time 5` per attempt, exiting non-zero if IMDS still returns empty after ~60s. See lines 14–57 of the script.
-   - **Status of the live patch:** still in place on the running server, but will be discarded with the VM on the next `terraform destroy`. After `terraform apply` re-creates the cluster, the script's polling loop should produce a correct cert on first boot, eliminating the need to re-apply the live patch.
-   - **Verification still pending:** the fix has not yet been exercised by a real destroy + apply cycle. Once that completes successfully and `kubectl get nodes` works from the Mac without any live patch, this issue can be marked fully resolved and the "Live Cluster State Not Captured in Terraform" section below can be deleted.
+6. **IMDS public IP lookup — RESOLVED.** Azure IMDS does not reliably report public IPs for Standard SKU public IPs. The original single-curl approach often returned empty. The script now tries IMDS (15 attempts, ~30s) then falls back to `ifconfig.me` (external IP-lookup service). Verified working across multiple destroy/apply cycles — the fallback consistently provides the correct public IP, and the K3s TLS cert includes it in the SANs. No manual live patching needed.
+
+10. **ArgoCD CRD annotation too long (256KB limit).** `kubectl apply` stores the full resource spec as an annotation. ArgoCD's ApplicationSet CRD exceeds the 256KB limit. Fixed with `--server-side=true` which uses managed fields instead of annotations.
+
+11. **ArgoCD server rollout timeout — VM too small.** `Standard_F1als_v7` (1 core, 2 GB) couldn't handle K3s control plane + ArgoCD (7 pods). Server upgraded to `Standard_F2als_v7` (2 cores, 4 GB). Rollout timeout increased to 300s.
+
+12. **ArgoCD Application missing `spec.project`.** Every Application must belong to an ArgoCD Project. Added `project: default` (the built-in unrestricted project).
+
+13. **ArgoCD dashboard unreachable — three stacked issues.** (a) `argocd-server-network-policy` blocked external NodePort traffic — deleted by cloud-init. (b) Service targetPort defaulted to 443 instead of 8080 (what argocd-server listens on) — patched to correct port. (c) ArgoCD's HTTP→HTTPS redirect created a loop because HTTPS wasn't configured — set `server.insecure: "true"` in `argocd-cmd-params-cm` ConfigMap.
+
+14. **K3s crash loop after ArgoCD install.** Installing ArgoCD immediately after K3s API responds overwhelmed the API server (CRDs + 7 pods before internal controllers stabilized). K3s's cloud-controller-manager couldn't read a configmap, triggering deliberate shutdown → restart loop. Fixed by adding Phase 2 readiness check: wait for all `kube-system` pods to be Running before installing ArgoCD. Verified with clean destroy/apply cycle.
 
 7. **Docker Hub CLI auth:** Password auth is disabled; `docker login` requires a Personal Access Token (PAT). Generated with Read & Write scope.
 
@@ -219,20 +240,17 @@ Key choices: `python:3.12-slim` (balance of size and compatibility — glibc, un
 
 ## Live Cluster State Not Captured in Terraform
 
-> **Note (2026-04-30):** the script-level fix in `install-k3s-server.sh` (polling IMDS until it returns a non-empty public IP) has been applied. After the next `terraform destroy` + `terraform apply`, the live patches below should no longer be necessary on the new cluster. This section will be deleted once that cycle is verified.
-
-The *currently-running* server VM has been manually modified beyond what Terraform applied:
-- `/etc/rancher/k3s/config.yaml` written with `tls-san` entry.
-- `/var/lib/rancher/k3s/server/tls/dynamic-cert.json` deleted (regenerated by K3s on restart).
-- K3s restarted to pick up the new SAN.
-
-These patches will be discarded when the VM is destroyed; the new cluster created by re-apply should not need them, because the script now polls IMDS correctly.
+None. As of 2026-05-26, a clean `terraform destroy` + `terraform apply` cycle produces a fully working cluster with ArgoCD deploying the app from git. No manual patches are needed.
 
 ## Future Considerations
 
-Improvements identified but deferred — worth revisiting when the bonus task is done:
-
-1. ~~**Fix the IMDS race in `install-k3s-server.sh` (permanent fix for issue #6).**~~ **DONE 2026-04-30.** The script now polls IMDS up to 30 attempts × 2s with `--max-time 5` per attempt and exits non-zero if no public IP is returned after ~60s. Pending real-world verification via the next `terraform destroy` + `terraform apply` cycle.
+1. ~~**Fix the IMDS race in `install-k3s-server.sh`.**~~ **DONE and VERIFIED.** Script uses IMDS with ifconfig.me fallback. Confirmed working across multiple destroy/apply cycles.
+2. **ArgoCD dashboard security.** Currently plain HTTP with admin password only. In production: Traefik Ingress with TLS (cert-manager + Let's Encrypt), ArgoCD RBAC + SSO via Dex.
+3. **Redis secret in git.** Plaintext password committed to git (acceptable for learning). In production: SealedSecrets or External Secrets Operator (Azure Key Vault integration).
+4. **Private repo support.** Repo was made public for ArgoCD. For private repos: fine-grained GitHub PAT → Kubernetes Secret with `argocd.argoproj.io/secret-type: repository` label in the `argocd` namespace.
+5. **Cloud-init script complexity.** The server script is ~200 lines with 4 major steps. Consider Ansible for post-boot configuration if it grows further — Ansible is re-runnable on existing VMs without destroying them.
+6. **K3s version pinning.** Currently installs latest stable. Pin with `INSTALL_K3S_VERSION="v1.35.5+k3s1"` for reproducibility.
+7. **ArgoCD sync polling interval.** Default 3 minutes. Can be reduced via `argocd-cm` ConfigMap for faster feedback, or use GitHub webhooks for immediate sync.
 
 ## How to Operate
 
@@ -268,4 +286,19 @@ sudo systemctl status k3s --no-pager
 Rebuild + push image (from `project_files/app/`):
 ```
 docker buildx build --platform linux/amd64 -t leodvethings/k3s-counter-api:<new-tag> --push .
+```
+
+ArgoCD dashboard:
+```
+http://<server_public_ip>:30443
+```
+Username: `admin`
+Password:
+```
+sudo kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath='{.data.password}' | base64 -d && echo
+```
+
+ArgoCD Application status:
+```
+sudo kubectl get applications -n argocd
 ```
