@@ -40,6 +40,6 @@ Feedback from code review. Check off each item as it's completed.
   - Root `main.tf` has providers, resources, locals, and outputs in one file.
   - Split into `main.tf`, `variables.tf`, `outputs.tf` (and optionally `providers.tf`, `locals.tf`).
 
-- [ ] **10. Run `tflint`**
+- [x] **10. Run `tflint`**
   - Install: `brew install tflint`.
   - The `terraform_standard_module_structure` rule will flag #9 plus naming/version-pinning issues.
