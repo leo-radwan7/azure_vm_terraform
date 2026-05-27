@@ -36,7 +36,7 @@ Feedback from code review. Check off each item as it's completed.
   - Clone, apply, verify (`kubectl get nodes`) should be readable in ~30 lines.
   - Subset of what's already in `llm_context.md`, aimed at humans.
 
-- [ ] **9. Follow Terraform Standard Module Structure in the root module**
+- [x] **9. Follow Terraform Standard Module Structure in the root module**
   - Root `main.tf` has providers, resources, locals, and outputs in one file.
   - Split into `main.tf`, `variables.tf`, `outputs.tf` (and optionally `providers.tf`, `locals.tf`).
 

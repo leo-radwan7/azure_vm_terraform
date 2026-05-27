@@ -1,34 +1,5 @@
 # ==============================================================
-# ROOT MODULE
-# ==============================================================
-# This is the entry point — what Terraform runs when you type
-# "terraform apply". It creates the shared infrastructure
-# (resource group, network) and then calls our VM module
-# once for each VM we want.
-# ==============================================================
-
-terraform {
-  required_providers {
-    azurerm = {
-      source  = "hashicorp/azurerm"
-      version = "~> 3.0"
-    }
-    # We need the "random" provider to generate the K3s token.
-    # Providers are plugins — each one knows how to talk to a
-    # specific API (Azure, AWS, random number generation, etc.)
-    random = {
-      source  = "hashicorp/random"
-      version = "~> 3.0"
-    }
-  }
-}
-
-provider "azurerm" {
-  features {}
-}
-
-# ==============================================================
-# SHARED INFRASTRUCTURE
+# ROOT MODULE — SHARED INFRASTRUCTURE
 # ==============================================================
 # These resources are created once and shared by all VMs.
 # This is why they live here in the root module, not inside
@@ -162,27 +133,4 @@ module "agent2" {
     server_private_ip = module.server.private_ip_address
   }))
 
-}
-
-# ==============================================================
-# OUTPUTS
-# ==============================================================
-# These print to your terminal after "terraform apply" finishes.
-# We access module outputs with: module.<label>.<output_name>
-# ==============================================================
-
-output "server_public_ip" {
-  value = module.server.public_ip_address
-}
-
-output "server_private_ip" {
-  value = module.server.private_ip_address
-}
-
-output "agent1_public_ip" {
-  value = module.agent1.public_ip_address
-}
-
-output "agent2_public_ip" {
-  value = module.agent2.public_ip_address
 }
