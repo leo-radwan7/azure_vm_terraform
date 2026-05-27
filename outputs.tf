@@ -14,9 +14,9 @@ output "server_private_ip" {
 }
 
 output "agent1_public_ip" {
-  value = module.agent1.public_ip_address
+  value = module.agent["k3s-agent-1"].public_ip_address
 }
 
 output "agent2_public_ip" {
-  value = module.agent2.public_ip_address
+  value = module.agent["k3s-agent-2"].public_ip_address
 }

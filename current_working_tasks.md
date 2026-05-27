@@ -8,7 +8,7 @@ Feedback from code review. Check off each item as it's completed.
   - Single laptop = single point of failure; K3s token sits in state as plaintext.
   - Target: Azure Storage Account with state locking (blob lease).
 
-- [ ] **2. Collapse two agent module blocks into one with `for_each`**
+- [x] **2. Collapse two agent module blocks into one with `for_each`**
   - `agent1` and `agent2` are copy-paste identical except for the name.
   - Use `for_each` on the module block to define agents once.
 

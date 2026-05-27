@@ -92,9 +92,9 @@ module "server" {
 # ==============================================================
 # AGENTS
 # ==============================================================
-# Both agents use the same script template but need two values:
-#   - k3s_token          → same token as the server
-#   - server_private_ip  → so they know where to connect
+# for_each creates one module instance per item in the set.
+# each.value is "k3s-agent-1" on the first pass, "k3s-agent-2"
+# on the second. Adding a third agent is one string change.
 #
 # Terraform automatically creates the server before the agents
 # because custom_data references module.server.private_ip_address
@@ -103,10 +103,11 @@ module "server" {
 # Note: the implicit dependency only guarantees the server VM
 # *exists* in Azure. The agent script's retry loop handles
 # waiting for K3s to actually be running.
-module "agent1" {
-  source = "./modules/vm"
+module "agent" {
+  for_each = toset(["k3s-agent-1", "k3s-agent-2"])
+  source   = "./modules/vm"
 
-  vm_name             = "k3s-agent-1"
+  vm_name             = each.value
   resource_group_name = azurerm_resource_group.rg.name
   location            = azurerm_resource_group.rg.location
   subnet_id           = azurerm_subnet.subnet.id
@@ -116,21 +117,4 @@ module "agent1" {
     k3s_token         = random_password.k3s_token.result
     server_private_ip = module.server.private_ip_address
   }))
-
-}
-
-module "agent2" {
-  source = "./modules/vm"
-
-  vm_name             = "k3s-agent-2"
-  resource_group_name = azurerm_resource_group.rg.name
-  location            = azurerm_resource_group.rg.location
-  subnet_id           = azurerm_subnet.subnet.id
-  subnet_cidr         = local.subnet_cidr
-
-  custom_data = base64encode(templatefile("${path.module}/scripts/install-k3s-agent.sh", {
-    k3s_token         = random_password.k3s_token.result
-    server_private_ip = module.server.private_ip_address
-  }))
-
 }
