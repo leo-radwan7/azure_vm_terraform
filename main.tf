@@ -125,14 +125,13 @@ module "server" {
 #   - k3s_token          → same token as the server
 #   - server_private_ip  → so they know where to connect
 #
-# depends_on ensures Terraform creates the server VM BEFORE
-# the agent VMs. Without it, Terraform would create all three
-# in parallel (because there's no direct data dependency
-# between the module calls for the agents and the server).
+# Terraform automatically creates the server before the agents
+# because custom_data references module.server.private_ip_address
+# — an implicit dependency. No explicit depends_on needed.
 #
-# Note: depends_on only guarantees the server VM *exists* in
-# Azure. The agent script's retry loop handles waiting for K3s
-# to actually be running.
+# Note: the implicit dependency only guarantees the server VM
+# *exists* in Azure. The agent script's retry loop handles
+# waiting for K3s to actually be running.
 module "agent1" {
   source = "./modules/vm"
 
@@ -147,7 +146,6 @@ module "agent1" {
     server_private_ip = module.server.private_ip_address
   }))
 
-  depends_on = [module.server]
 }
 
 module "agent2" {
@@ -164,7 +162,6 @@ module "agent2" {
     server_private_ip = module.server.private_ip_address
   }))
 
-  depends_on = [module.server]
 }
 
 # ==============================================================
