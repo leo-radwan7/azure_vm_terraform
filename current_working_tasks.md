@@ -24,7 +24,7 @@ Feedback from code review. Check off each item as it's completed.
   - Port 22 is open to `0.0.0.0/0` on all three VMs.
   - Add an `allowed_ssh_cidr` variable and use it in the NSG rule's `source_address_prefix`.
 
-- [ ] **6. Protect `random_password` from silent token rotation**
+- [x] **6. Protect `random_password` from silent token rotation**
   - If the resource is replaced, the new token won't match what's running on existing VMs.
   - Consider `lifecycle { prevent_destroy = true }` or `ignore_changes` on `custom_data`.
 

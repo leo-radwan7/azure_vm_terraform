@@ -57,6 +57,15 @@ locals {
 resource "random_password" "k3s_token" {
   length  = 32
   special = false # Keep it alphanumeric — avoids shell escaping headaches
+
+  # Editing length/special would REPLACE this resource, generating a new
+  # token. That new value flows into every VM's custom_data (immutable),
+  # forcing a full cluster rebuild — and a partial rebuild would leave
+  # agents joining with a token the server doesn't recognize. Ignoring
+  # these inputs keeps the token stable for the cluster's life.
+  lifecycle {
+    ignore_changes = [length, special]
+  }
 }
 
 # ==============================================================
