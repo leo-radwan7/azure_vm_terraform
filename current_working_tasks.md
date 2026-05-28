@@ -12,7 +12,7 @@ Feedback from code review. Check off each item as it's completed.
   - `agent1` and `agent2` are copy-paste identical except for the name.
   - Use `for_each` on the module block to define agents once.
 
-- [ ] **3. Automate kubeconfig retrieval**
+- [x] **3. Automate kubeconfig retrieval**
   - Currently requires manual SSH + sed to get `kubectl` working from the laptop.
   - Either a Terraform output, `local-exec` provisioner, or a helper script.
 
