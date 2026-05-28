@@ -133,8 +133,12 @@ ms_azure_make_vm/
 
 ### NSG Rules Per VM
 
-**Server (`k3s-server-nsg`):** priority 1000 allow intra-subnet; 1001 SSH; 1100 TCP/6443 (K3s API); 1101 TCP/80; 1102 TCP/443; 1103 TCP/30443 (ArgoCD dashboard).
-**Agents:** priority 1000 intra-subnet; 1001 SSH. No extra ports.
+**Server (`k3s-server-nsg`):** priority 1000 allow intra-subnet; 1001 SSH (restricted to `var.allowed_ssh_cidr`); 1100 TCP/6443 (K3s API); 1101 TCP/80; 1102 TCP/443; 1103 TCP/30443 (ArgoCD dashboard).
+**Agents:** priority 1000 intra-subnet; 1001 SSH (restricted to `var.allowed_ssh_cidr`). No extra ports.
+
+SSH (port 22) is no longer open to the internet. Rule (a) uses `source_address_prefix = var.allowed_ssh_cidr`, threaded from the root module. The value lives in `terraform.tfvars` (gitignored), e.g. `allowed_ssh_cidr = "76.33.188.174/32"`.
+
+⚠️ **SSH lockout gotcha:** Your home/public IP is dynamic — if your ISP changes it, or if you run Terraform / SSH from a different network (coffee shop, office, VPN), the NSG no longer matches your current source IP and **all SSH attempts to every VM will hang/time out**. This is not a key or server problem — it's the firewall silently dropping you. Fix: run `curl -4 ifconfig.me` to get your current IPv4 address, update `allowed_ssh_cidr` in `terraform.tfvars`, then `terraform apply` (only the NSG rules change — no VM rebuild). Note also: only IPv4 is allowed; `curl ifconfig.me` may return an IPv6 address, so always use `-4`. The K3s API (6443), web app (80/443), and ArgoCD dashboard (30443) are unaffected — they remain open to the internet.
 
 ## Bonus Task — App Details
 
@@ -237,6 +241,8 @@ Key choices: `python:3.12-slim` (balance of size and compatibility — glibc, un
 8. **Cross-architecture build:** Mac is arm64, VMs are amd64. Native `docker build` produced arm64 images unusable on VMs. Fixed with `docker buildx build --platform linux/amd64 ... --push`. QEMU emulation handled the amd64 build steps.
 
 9. **Heredoc EOF indentation:** In interactive shell on the server, `<<EOF ... EOF` with an indented closing `EOF` caused bash to wait indefinitely. Fixed by using `echo 'line' | sudo tee -a file` for each line instead.
+
+15. **SSH lockout after IP change / network change (POTENTIAL — by design).** Since SSH is now restricted to `var.allowed_ssh_cidr` (set in `terraform.tfvars`), SSH to *any* VM will silently hang/time out if your current public IP no longer matches that CIDR — e.g. ISP rotated your dynamic IP, or you're on a different network (office, café, VPN). Symptom looks like a dead server, but it's the Azure NSG dropping the connection. Fix: `curl -4 ifconfig.me` → update `allowed_ssh_cidr` in `terraform.tfvars` → `terraform apply` (only NSG rules change, no VM rebuild). Use `-4` because `ifconfig.me` may return an IPv6 address, but the VMs only have IPv4 public IPs so only an IPv4 `/32` will match. See the NSG Rules Per VM section for details.
 
 ## Live Cluster State Not Captured in Terraform
 
