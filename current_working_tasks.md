@@ -4,7 +4,7 @@ Feedback from code review. Check off each item as it's completed.
 
 ---
 
-- [ ] **1. Move state to a remote backend**
+- [x] **1. Move state to a remote backend**
   - Single laptop = single point of failure; K3s token sits in state as plaintext.
   - Target: Azure Storage Account with state locking (blob lease).
 
