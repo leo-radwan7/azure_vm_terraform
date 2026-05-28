@@ -193,10 +193,15 @@ Key choices: `python:3.12-slim` (balance of size and compatibility — glibc, un
 ## Kubectl Setup on User's Mac
 
 - `kubectl` is installed (confirmed working, version check reported Client).
-- Kubeconfig at `~/.kube/config`, permissions `0600`.
-- Fetched from server via `ssh ... "sudo cat /etc/rancher/k3s/k3s.yaml" > ~/.kube/config`, then `sed` to replace `server: https://127.0.0.1:6443` with `server: https://<server_public_ip>:6443`.
-- Any existing kubeconfig was backed up to `~/.kube/config.backup-<timestamp>` before overwrite.
-- Verified with `kubectl get nodes` — returns three Ready nodes.
+- **Automated via `get-kubeconfig.sh`** (in `project_files/`). After `terraform apply`, run:
+  ```
+  ./get-kubeconfig.sh
+  export KUBECONFIG=$PWD/kubeconfig
+  kubectl get nodes
+  ```
+- The script reads `server_public_ip` from `terraform output`, SSHes to the server, reads `/etc/rancher/k3s/k3s.yaml`, rewrites the API address `https://127.0.0.1:6443` → `https://<server_public_ip>:6443`, and writes `./kubeconfig` (0600). It writes a project-local `./kubeconfig` rather than `~/.kube/config`, so it never clobbers other clusters. The file holds cluster admin credentials and is gitignored.
+- Re-run the script whenever the server's public IP changes (it's reassigned on every `terraform apply`).
+- Verified end-to-end: returns three Ready nodes (`k3s-server`, `k3s-agent-1`, `k3s-agent-2`).
 
 ## Key Design Decisions
 
@@ -268,8 +273,10 @@ terraform output    # Show IPs
 terraform plan      # Preview
 ```
 
-Verify cluster from Mac:
+Fetch kubeconfig + verify cluster from Mac (after apply):
 ```
+./get-kubeconfig.sh
+export KUBECONFIG=$PWD/kubeconfig
 kubectl get nodes
 ```
 
