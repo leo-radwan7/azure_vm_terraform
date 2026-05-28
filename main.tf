@@ -70,6 +70,7 @@ module "server" {
   location            = azurerm_resource_group.rg.location
   subnet_id           = azurerm_subnet.subnet.id
   subnet_cidr         = local.subnet_cidr
+  allowed_ssh_cidr    = var.allowed_ssh_cidr
   vm_size             = "Standard_F2als_v7"
   extra_open_ports    = [6443, 80, 443, 30443]
 
@@ -112,6 +113,7 @@ module "agent" {
   location            = azurerm_resource_group.rg.location
   subnet_id           = azurerm_subnet.subnet.id
   subnet_cidr         = local.subnet_cidr
+  allowed_ssh_cidr    = var.allowed_ssh_cidr
 
   custom_data = base64encode(templatefile("${path.module}/scripts/install-k3s-agent.sh", {
     k3s_token         = random_password.k3s_token.result

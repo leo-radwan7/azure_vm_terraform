@@ -20,7 +20,7 @@ Feedback from code review. Check off each item as it's completed.
   - `module.server.private_ip_address` in the templatefile call already creates an implicit dependency.
   - The explicit `depends_on` is unnecessary and forces broader re-planning.
 
-- [ ] **5. Restrict SSH to a specific IP**
+- [x] **5. Restrict SSH to a specific IP**
   - Port 22 is open to `0.0.0.0/0` on all three VMs.
   - Add an `allowed_ssh_cidr` variable and use it in the NSG rule's `source_address_prefix`.
 
