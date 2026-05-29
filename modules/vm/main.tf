@@ -36,7 +36,7 @@ resource "azurerm_network_security_group" "nsg" {
   location            = var.location
   resource_group_name = var.resource_group_name
 
-  # Rule (a): Allow SSH from anywhere
+  # Rule (a): Allow SSH from a specific CIDR only (e.g. your home IP)
   security_rule {
     name                       = "allow-ssh"
     priority                   = 1001
@@ -45,7 +45,7 @@ resource "azurerm_network_security_group" "nsg" {
     protocol                   = "Tcp"
     source_port_range          = "*"
     destination_port_range     = "22"
-    source_address_prefix      = "*"
+    source_address_prefix      = var.allowed_ssh_cidr
     destination_address_prefix = "*"
   }
 

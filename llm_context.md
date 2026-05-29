@@ -11,6 +11,7 @@ Turn a single-VM Terraform config into a reusable module, use it to stand up thr
 - All three VMs created, K3s installed via cloud-init, cluster verified working.
 - `kubectl get nodes` returns three Ready nodes running K3s v1.35.5+k3s1.
 - Server VM upgraded to `Standard_F2als_v7` (2 cores, 4 GB RAM) to accommodate ArgoCD. Agents remain at `Standard_F1als_v7` (1 core, 2 GB RAM). Total: 4 cores (quota limit).
+- **Code-review hardening (2026-05-28):** remote `azurerm` state backend (state off the laptop, locking via blob lease); two agent module blocks collapsed into one `for_each` module; redundant `depends_on` removed (relies on implicit dependency); SSH restricted to `allowed_ssh_cidr`; `random_password` token guarded with `lifecycle { ignore_changes }`; root module split into `main.tf`/`providers.tf`/`variables.tf`/`outputs.tf`; `required_version` added (flagged by tflint). Still pending: Redis-secret documentation (#7) and a README (#8).
 
 **Bonus task (deploy an app reachable from a browser):** ✅ complete.
 
@@ -49,13 +50,18 @@ Turn a single-VM Terraform config into a reusable module, use it to stand up thr
 ```
 ms_azure_make_vm/
 ├── project_files/                      ← GIT REPO ROOT (Terraform root)
-│   ├── main.tf                         ← Root module: providers, shared infra, 3 module calls, outputs
+│   ├── main.tf                         ← Root module: shared infra + server module + agent for_each module call
+│   ├── providers.tf                    ← terraform block (azurerm remote backend, required_version, required_providers) + provider config
+│   ├── variables.tf                    ← Root input variables (allowed_ssh_cidr)
+│   ├── outputs.tf                      ← Root outputs (server/agent IPs)
+│   ├── terraform.tfvars                ← Variable values incl. allowed_ssh_cidr (gitignored)
+│   ├── get-kubeconfig.sh               ← Fetches kubeconfig from server, rewrites API address to public IP
 │   ├── .terraform.lock.hcl             ← Provider version lock (committed to git)
-│   ├── .gitignore                      ← Excludes .terraform/, *.tfstate, *.tfstate.backup
-│   ├── terraform.tfstate               ← Current state
-│   ├── terraform.tfstate.backup        ← Previous state
+│   ├── .gitignore                      ← Excludes .terraform/, *.tfstate*, kubeconfig, *.tfvars
 │   ├── .terraform/                     ← Downloaded providers (gitignored)
 │   ├── llm_context.md                  ← This file (tracked in git, subscription ID redacted)
+│   ├── current_working_tasks.md        ← Code-review task checklist (items 1–10)
+│   ├── learning_from_issues_2026-05-28.md ← Study guide explaining the 10 code-review issues
 │   ├── issues_encountered_2026-05-26.md ← Detailed issue report from ArgoCD integration sessions
 │   ├── scripts/                        ← Cloud-init templates for Terraform
 │   │   ├── install-k3s-server.sh       ← templatefile vars: k3s_token; installs K3s + ArgoCD + deploys app via GitOps
@@ -63,7 +69,7 @@ ms_azure_make_vm/
 │   ├── modules/
 │   │   └── vm/
 │   │       ├── main.tf                 ← Resources: public IP, NSG, NIC, NIC-NSG association, Linux VM
-│   │       ├── variables.tf            ← 9 variables
+│   │       ├── variables.tf            ← 11 variables
 │   │       └── outputs.tf              ← 3 outputs: public_ip_address, private_ip_address, vm_id
 │   ├── app/                            ← Python app (added for bonus task)
 │   │   ├── app.py                      ← Flask API, ~25 lines, reads REDIS_HOST/PORT/PASSWORD from env
@@ -92,27 +98,37 @@ ms_azure_make_vm/
 - `hashicorp/azurerm` ~> 3.0 — Azure resource management
 - `hashicorp/random` ~> 3.0 — generates the K3s join token
 
+### Terraform Block & Remote Backend (project_files/providers.tf)
+
+- `required_version = ">= 1.0"` pins the Terraform CLI (added after a `tflint` run flagged its absence).
+- **Remote state backend (`azurerm`):** state lives in Azure Blob Storage, not on the laptop.
+  - Storage account `tfstatek3sleo`, container `tfstate`, blob key `k3s-cluster.tfstate`, in resource group `terraform-state-rg`.
+  - That resource group + storage account were created out-of-band (Azure CLI) and live **outside** this config, so `terraform destroy` can never delete the state it depends on.
+  - State locking is native (Azure blob lease) — no separate lock table needed.
+  - Auth uses your `az login` credentials to fetch the storage key. After cloning, run `terraform init` to wire up the backend before any plan/apply.
+
 ### Root Module (project_files/main.tf)
 
 **Shared resources:**
 - `azurerm_resource_group.rg` — name: `k3s-cluster-rg`, location: `West US 2`
 - `azurerm_virtual_network.vnet` — name: `k3s-vnet`, address space: `10.0.0.0/16`
 - `azurerm_subnet.subnet` — name: `k3s-subnet`, CIDR: `10.0.1.0/24`
-- `random_password.k3s_token` — 32-char alphanumeric, no specials
+- `random_password.k3s_token` — 32-char alphanumeric, no specials. Carries `lifecycle { ignore_changes = [length, special] }` so editing those inputs can't silently regenerate the token — a regenerated token would change every VM's immutable `custom_data` and force a full cluster rebuild.
 
 **Module calls:**
 
-| Module label | VM name | extra_open_ports | custom_data script | depends_on |
+| Module label | VM name(s) | extra_open_ports | custom_data script | ordering |
 |---|---|---|---|---|
 | `server` | `k3s-server` | `[6443, 80, 443, 30443]` | `install-k3s-server.sh` | none |
-| `agent1` | `k3s-agent-1` | `[]` | `install-k3s-agent.sh` | `[module.server]` |
-| `agent2` | `k3s-agent-2` | `[]` | `install-k3s-agent.sh` | `[module.server]` |
+| `agent` (`for_each`) | `k3s-agent-1`, `k3s-agent-2` | `[]` | `install-k3s-agent.sh` | implicit (via `module.server.private_ip_address` in custom_data) |
 
-**Outputs:** `server_public_ip`, `server_private_ip`, `agent1_public_ip`, `agent2_public_ip`
+The two agents are now a single `module "agent"` block using `for_each = toset(["k3s-agent-1", "k3s-agent-2"])` (previously duplicate `agent1`/`agent2` blocks). The explicit `depends_on = [module.server]` was removed: the agent `custom_data` references `module.server.private_ip_address`, which already creates an implicit dependency that orders the server before the agents.
+
+**Outputs:** `server_public_ip`, `server_private_ip`, `agent1_public_ip`, `agent2_public_ip` (the agent outputs index the `for_each` instances, e.g. `module.agent["k3s-agent-1"].public_ip_address`)
 
 ### VM Module (modules/vm/)
 
-**Variables (9):**
+**Variables (11):**
 
 | Variable | Type | Required | Default | Purpose |
 |---|---|---|---|---|
@@ -121,6 +137,7 @@ ms_azure_make_vm/
 | `location` | string | yes | — | Azure region |
 | `subnet_id` | string | yes | — | Subnet to attach NIC to |
 | `subnet_cidr` | string | yes | — | Used in NSG rule for intra-subnet traffic |
+| `allowed_ssh_cidr` | string | yes | — | CIDR allowed to SSH (port 22); set in terraform.tfvars |
 | `extra_open_ports` | list(number) | no | `[]` | Ports to open from internet (dynamic block) |
 | `vm_size` | string | no | `Standard_F1als_v7` | VM SKU |
 | `admin_username` | string | no | `azureuser` | SSH user |
@@ -133,8 +150,12 @@ ms_azure_make_vm/
 
 ### NSG Rules Per VM
 
-**Server (`k3s-server-nsg`):** priority 1000 allow intra-subnet; 1001 SSH; 1100 TCP/6443 (K3s API); 1101 TCP/80; 1102 TCP/443; 1103 TCP/30443 (ArgoCD dashboard).
-**Agents:** priority 1000 intra-subnet; 1001 SSH. No extra ports.
+**Server (`k3s-server-nsg`):** priority 1000 allow intra-subnet; 1001 SSH (restricted to `var.allowed_ssh_cidr`); 1100 TCP/6443 (K3s API); 1101 TCP/80; 1102 TCP/443; 1103 TCP/30443 (ArgoCD dashboard).
+**Agents:** priority 1000 intra-subnet; 1001 SSH (restricted to `var.allowed_ssh_cidr`). No extra ports.
+
+SSH (port 22) is no longer open to the internet. Rule (a) uses `source_address_prefix = var.allowed_ssh_cidr`, threaded from the root module. The value lives in `terraform.tfvars` (gitignored), e.g. `allowed_ssh_cidr = "76.33.188.174/32"`.
+
+⚠️ **SSH lockout gotcha:** Your home/public IP is dynamic — if your ISP changes it, or if you run Terraform / SSH from a different network (coffee shop, office, VPN), the NSG no longer matches your current source IP and **all SSH attempts to every VM will hang/time out**. This is not a key or server problem — it's the firewall silently dropping you. Fix: run `curl -4 ifconfig.me` to get your current IPv4 address, update `allowed_ssh_cidr` in `terraform.tfvars`, then `terraform apply` (only the NSG rules change — no VM rebuild). Note also: only IPv4 is allowed; `curl ifconfig.me` may return an IPv6 address, so always use `-4`. The K3s API (6443), web app (80/443), and ArgoCD dashboard (30443) are unaffected — they remain open to the internet.
 
 ## Bonus Task — App Details
 
@@ -189,15 +210,20 @@ Key choices: `python:3.12-slim` (balance of size and compatibility — glibc, un
 ## Kubectl Setup on User's Mac
 
 - `kubectl` is installed (confirmed working, version check reported Client).
-- Kubeconfig at `~/.kube/config`, permissions `0600`.
-- Fetched from server via `ssh ... "sudo cat /etc/rancher/k3s/k3s.yaml" > ~/.kube/config`, then `sed` to replace `server: https://127.0.0.1:6443` with `server: https://<server_public_ip>:6443`.
-- Any existing kubeconfig was backed up to `~/.kube/config.backup-<timestamp>` before overwrite.
-- Verified with `kubectl get nodes` — returns three Ready nodes.
+- **Automated via `get-kubeconfig.sh`** (in `project_files/`). After `terraform apply`, run:
+  ```
+  ./get-kubeconfig.sh
+  export KUBECONFIG=$PWD/kubeconfig
+  kubectl get nodes
+  ```
+- The script reads `server_public_ip` from `terraform output`, SSHes to the server, reads `/etc/rancher/k3s/k3s.yaml`, rewrites the API address `https://127.0.0.1:6443` → `https://<server_public_ip>:6443`, and writes `./kubeconfig` (0600). It writes a project-local `./kubeconfig` rather than `~/.kube/config`, so it never clobbers other clusters. The file holds cluster admin credentials and is gitignored.
+- Re-run the script whenever the server's public IP changes (it's reassigned on every `terraform apply`).
+- Verified end-to-end: returns three Ready nodes (`k3s-server`, `k3s-agent-1`, `k3s-agent-2`).
 
 ## Key Design Decisions
 
-1. **K3s token:** Pre-generated with `random_password`. Avoids SSH-based provisioning or multi-phase apply.
-2. **Ordering:** `depends_on` creates server before agents. Agent script's retry loop handles the gap between "VM exists" and "K3s is running."
+1. **K3s token:** Pre-generated with `random_password`. Avoids SSH-based provisioning or multi-phase apply. Guarded with `lifecycle { ignore_changes = [length, special] }` so it can't silently regenerate and force a full cluster rebuild.
+2. **Ordering:** The agent `custom_data` references `module.server.private_ip_address`, creating an implicit dependency that builds the server before the agents (no explicit `depends_on` needed). The agent script's retry loop handles the gap between "VM exists" and "K3s is running."
 3. **Networking:** Single subnet. Intra-subnet NSG rule allows all traffic between nodes (covers all K3s ports). Only the server exposes ports to the internet.
 4. **Provisioning:** Cloud-init via `custom_data` (not `remote-exec`). Declarative, no SSH during Terraform apply, scripts run as root on first boot.
 5. **TLS SAN:** Server script fetches its own public IP at runtime and passes it as `--tls-san`. Tries Azure IMDS first (15 attempts), falls back to `ifconfig.me` (external IP-lookup service). IMDS is unreliable for Standard SKU public IPs; the fallback is reliable because the VM has internet access. Avoids circular dependency (public IP created inside the module, custom_data passed in).
@@ -238,6 +264,8 @@ Key choices: `python:3.12-slim` (balance of size and compatibility — glibc, un
 
 9. **Heredoc EOF indentation:** In interactive shell on the server, `<<EOF ... EOF` with an indented closing `EOF` caused bash to wait indefinitely. Fixed by using `echo 'line' | sudo tee -a file` for each line instead.
 
+15. **SSH lockout after IP change / network change (POTENTIAL — by design).** Since SSH is now restricted to `var.allowed_ssh_cidr` (set in `terraform.tfvars`), SSH to *any* VM will silently hang/time out if your current public IP no longer matches that CIDR — e.g. ISP rotated your dynamic IP, or you're on a different network (office, café, VPN). Symptom looks like a dead server, but it's the Azure NSG dropping the connection. Fix: `curl -4 ifconfig.me` → update `allowed_ssh_cidr` in `terraform.tfvars` → `terraform apply` (only NSG rules change, no VM rebuild). Use `-4` because `ifconfig.me` may return an IPv6 address, but the VMs only have IPv4 public IPs so only an IPv4 `/32` will match. See the NSG Rules Per VM section for details.
+
 ## Live Cluster State Not Captured in Terraform
 
 None. As of 2026-05-26, a clean `terraform destroy` + `terraform apply` cycle produces a fully working cluster with ArgoCD deploying the app from git. No manual patches are needed.
@@ -256,14 +284,17 @@ None. As of 2026-05-26, a clean `terraform destroy` + `terraform apply` cycle pr
 
 All Terraform commands run from `project_files/`:
 ```
+terraform init      # First run / after clone — connects to the Azure remote state backend
 terraform apply     # Create/update
 terraform destroy   # Delete
 terraform output    # Show IPs
 terraform plan      # Preview
 ```
 
-Verify cluster from Mac:
+Fetch kubeconfig + verify cluster from Mac (after apply):
 ```
+./get-kubeconfig.sh
+export KUBECONFIG=$PWD/kubeconfig
 kubectl get nodes
 ```
 

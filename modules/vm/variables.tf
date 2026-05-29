@@ -55,6 +55,11 @@ variable "extra_open_ports" {
   # The server will pass [6443, 80, 443] to expose the K3s API and web traffic.
 }
 
+variable "allowed_ssh_cidr" {
+  description = "CIDR allowed to SSH (port 22) to this VM, e.g. your home IP as x.x.x.x/32"
+  type        = string
+}
+
 # ---------- VM sizing & auth ----------
 
 variable "vm_size" {

@@ -3,6 +3,9 @@
 *.tfstate
 *.tfstate.backup
 
+# Fetched cluster kubeconfig (holds admin credentials)
+kubeconfig
+
 # Terraform variables (often hold secrets)
 *.tfvars
 *.tfvars.json
