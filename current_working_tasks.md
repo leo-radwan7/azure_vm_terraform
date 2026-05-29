@@ -28,7 +28,7 @@ Feedback from code review. Check off each item as it's completed.
   - If the resource is replaced, the new token won't match what's running on existing VMs.
   - Consider `lifecycle { prevent_destroy = true }` or `ignore_changes` on `custom_data`.
 
-- [ ] **7. Document (or automate) the Redis secret**
+- [x] **7. Document (or automate) the Redis secret**
   - The password is committed as plaintext in `10-redis-secret.yaml`.
   - At minimum document the manual step; production answer is SealedSecrets or Key Vault CSI.
 
