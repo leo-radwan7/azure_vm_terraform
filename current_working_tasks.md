@@ -32,7 +32,7 @@ Feedback from code review. Check off each item as it's completed.
   - The password is committed as plaintext in `10-redis-secret.yaml`.
   - At minimum document the manual step; production answer is SealedSecrets or Key Vault CSI.
 
-- [ ] **8. Add a README**
+- [x] **8. Add a README**
   - Clone, apply, verify (`kubectl get nodes`) should be readable in ~30 lines.
   - Subset of what's already in `llm_context.md`, aimed at humans.
 
